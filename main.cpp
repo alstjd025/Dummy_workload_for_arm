@@ -2,8 +2,16 @@
 #include <EGL/egl.h>
 #include <iostream>
 #include <vector>
+#include <string>
+#include <chrono>
+#include <thread>
 
-const int matrixSize = 1048576;
+const int matrixSize = 262144;
+
+// 1048576 - 250%, 524288 - 100%, 262144, 131072
+// 
+// 
+// 
 
 const char* computeShaderSource = R"(
     #version 310 es
@@ -25,10 +33,10 @@ const char* computeShaderSource = R"(
     void main() {
         ivec2 idx = ivec2(gl_GlobalInvocationID.xy);
         float sum = 0.0;
-        for (int k = 0; k < 1048576; ++k) {
-            sum += inputMatrixA.matrixA[idx.y * 1048576 + k] * inputMatrixB.matrixB[k * 1048576 + idx.x];
+        for (int k = 0; k < 262144; ++k) {
+            sum += inputMatrixA.matrixA[idx.y * 262144 + k] * inputMatrixB.matrixB[k * 262144 + idx.x];
         }
-        outputMatrix.resultMatrix[idx.y * 1048576 + idx.x] = sum;
+        outputMatrix.resultMatrix[idx.y * 262144 + idx.x] = sum;
     }
 )";
 
@@ -132,8 +140,10 @@ int main() {
     glUseProgram(program);
 
     // glDispatchCompute(numWorkgroupsX, numWorkgroupsY, 1);
+    
     glDispatchCompute(16, 16, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
 
     // Read back result
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferResult);
