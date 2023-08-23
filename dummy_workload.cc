@@ -1,6 +1,6 @@
 #include "dummy_workload.h"
 
-#define GPU_MAT_SIZE 131072
+#define GPU_MAT_SIZE 1024
 // 1048576, 524288, 262144, 131072, 65536
 // 1048576 - 2.2s, 100%
 // 524288 - 1s  , 100%
@@ -28,10 +28,10 @@ const char* computeShaderSource = R"(
     void main() {
         ivec2 idx = ivec2(gl_GlobalInvocationID.xy);
         float sum = 0.0;
-        for (int k = 0; k < 131072; ++k) {
-            sum += inputMatrixA.matrixA[idx.y * 131072 + k] * inputMatrixB.matrixB[k * 131072 + idx.x];
+        for (int k = 0; k < 1024; ++k) {
+            sum += inputMatrixA.matrixA[idx.y * 1024 + k] * inputMatrixB.matrixB[k * 1024 + idx.x];
         }
-        outputMatrix.resultMatrix[idx.y * 131072 + idx.x] = sum;
+        outputMatrix.resultMatrix[idx.y * 1024 + idx.x] = sum;
     }
 )";
 
@@ -195,7 +195,8 @@ void Workload::GPU_Worker(){
     cv.wait(lock_, [this]() { return ignition; });
   }
   while(!stop){
-    glDispatchCompute(16, 16, 1);
+    // glDispatchCompute(16, 16, 1);
+    glDispatchCompute(1, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
     glFinish();
