@@ -134,26 +134,16 @@ int main() {
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, bufferA);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, bufferB);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, bufferResult);
-
-    // NO IDEA ON CHOOSING WORKGROUP SIZE...
-    // // Dispatch compute shader with appropriate workgroups
-    // GLuint numWorkgroupsX = (matrixSize + 31) / 32; // Divide and round up
-    // GLuint numWorkgroupsY = (matrixSize + 31) / 32; // Divide and round up
     
     glUseProgram(program);
 
-    // glDispatchCompute(numWorkgroupsX, numWorkgroupsY, 1);
-    
     struct timespec begin, end;
+
     clock_gettime(CLOCK_MONOTONIC, &begin);
     glDispatchCompute(16, 16, 1);
-
-    // Flush sync and loop afterwards without it.
-    // GLenum status = glClientWaitSync(sync.sync(), GL_SYNC_FLUSH_COMMANDS_BIT,
-    //                                 /* timeout ns = */ 0);
-
     glFinish();
     clock_gettime(CLOCK_MONOTONIC, &end);
+
     double latency = (end.tv_sec - begin.tv_sec) + ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
     std::cout << "latency " << latency << "\n";
 
@@ -164,19 +154,6 @@ int main() {
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferResult);
     float *output = (float *)(glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 
         0, sizeof(float) * matrixElements, GL_MAP_READ_BIT));
-
-    // Print result
-    // std::cout << "Result Matrix:" << std::endl;
-    // // std::cout << output[0] << " ";
-    // for (GLuint i = 0; i < matrixSize; ++i) {
-    //     for (GLuint j = 0; j < matrixSize; ++j) {
-    //         std::cout << output[i * matrixSize + j] << " ";
-    //     }
-    //     std::cout << std::endl;
-    // }
-    // std::cout << "MAX WORKGROUP size " << GL_MAX_COMPUTE_WORK_GROUP_SIZE << "\n" ;
-    // std::cout << "MAX WORKGROUP count " << GL_MAX_COMPUTE_WORK_GROUP_COUNT << "\n" ;
-    // std::cout << "MAX WORKGROUP invoke " << GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS << "\n" ;
 
     // Clean up
     glDeleteShader(computeShader);

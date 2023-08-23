@@ -15,11 +15,12 @@ class Workload{
     
     ~Workload();
 
-    void GPU_Worker(int& id, std::atomic_bool& stop_flag);
-    void CPU_Worker(int id);
+    void GPU_Worker();
+    void CPU_Worker();
 
     struct timespec start_time;
     bool ignition = false;
+    bool terminate = false;
     std::mutex mtx;
     std::condition_variable cv;
     std::atomic_bool stop;
