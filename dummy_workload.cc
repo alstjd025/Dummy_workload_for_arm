@@ -42,10 +42,17 @@ Workload::Workload(int duration, int cpu, int gpu, bool random){
   std::cout << "Got cpu " << cpu << " gpu " << gpu << " duration " << duration << "\n";
   stop = false;
   if(gpu > 0){
-    gpu_workload_pool.reserve(gpu+1);
+    gpu_workload_pool.reserve(gpu);
     for(int i=0; i<gpu; ++i){
       std::cout << "Creates " << i << " gpu worker" << "\n";
       gpu_workload_pool.emplace_back([this]() { this->GPU_Worker(); });
+    }
+  }
+  if(cpu > 0){
+    cpu_workload_pool.reserve(cpu);
+    for(int i=0; i<cpu; ++i){
+      std::cout << "Creates " << i << " cpu worker" << "\n";
+      cpu_workload_pool.emplace_back([this]() { this->CPU_Worker(); });
     }
   }
   
@@ -60,6 +67,7 @@ Workload::Workload(int duration, int cpu, int gpu, bool random){
   clock_gettime(CLOCK_MONOTONIC, &begin);
   double elepsed_t = 0;
   while(elepsed_t < duration) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     clock_gettime(CLOCK_MONOTONIC, &end);
     elepsed_t = (end.tv_sec - begin.tv_sec) + ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
   }
@@ -67,11 +75,24 @@ Workload::Workload(int duration, int cpu, int gpu, bool random){
   stop = true;
   for(auto& workers : gpu_workload_pool)
     workers.join();
+  for(auto& workers : cpu_workload_pool)
+    workers.join();
   std::cout << "Dummy workload end" << "\n";
 };
 
 void Workload::CPU_Worker(){
   // not implemented
+  std::cout << "Created new CPU worker \n";
+  {
+    std::unique_lock<std::mutex> lock_(mtx);
+    cv.wait(lock_, [this]() { return ignition; });
+  }
+  double a = 1;
+  double b = 0.0003;
+  while(!stop){
+    a *= b;
+  }
+  std::cout << "Terminates CPU worker " << "\n";
 };
 
 void Workload::GPU_Worker(){
@@ -198,7 +219,7 @@ void Workload::GPU_Worker(){
   eglDestroyContext(display, context);
   eglTerminate(display);
 
-  std::cout << "Terminates gpu worker " << "\n";
+  std::cout << "Terminates GPU worker " << "\n";
   return;
 }
 
