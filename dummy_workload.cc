@@ -1,12 +1,15 @@
 #include "dummy_workload.h"
 
-#define GPU_MAT_SIZE 1024
+#define GPU_MAT_SIZE 512
 // 1048576, 524288, 262144, 131072, 65536
 // 1048576 - 2.2s, 100%
 // 524288 - 1s  , 100%
 // 262144 - 0.5s, 100%
 // 131072 - 0.24s, 100%
-// 65536 - 0.12s, 100%
+// 65536 - 0.12s - glDispatchCompute(32, 32, 1); 98%
+//
+// 1024 - glDispatchCompute(32, 32, 1); 98%
+// 1024 - glDispatchCompute(1, 1, 1); 50%
 
 const char* computeShaderSource = R"(
     #version 310 es
@@ -41,13 +44,15 @@ Workload::Workload(int duration, int cpu, int gpu, bool random){
   struct timespec begin, end;
   std::cout << "Got cpu " << cpu << " gpu " << gpu << " duration " << duration << "\n";
   stop = false;
-  if(gpu > 0){
-    gpu_workload_pool.reserve(gpu);
-    for(int i=0; i<gpu; ++i){
-      std::cout << "Creates " << i << " gpu worker" << "\n";
-      gpu_workload_pool.emplace_back([this]() { this->GPU_Worker(); });
-    }
-  }
+  // if(gpu > 0){
+  //   gpu_workload_pool.reserve(gpu);
+  //   for(int i=0; i<gpu; ++i){
+  //     std::cout << "Creates " << i << " gpu worker" << "\n";
+  //     gpu_workload_pool.emplace_back([this]() { this->GPU_Worker(); });
+  //   }
+  // }
+  cpu = 3;
+  duration = 5;
   if(cpu > 0){
     cpu_workload_pool.reserve(cpu);
     for(int i=0; i<cpu; ++i){
@@ -56,8 +61,8 @@ Workload::Workload(int duration, int cpu, int gpu, bool random){
     }
   }
   
-  std::this_thread::sleep_for(std::chrono::seconds(1));
-  { // wakes gpu workers
+  std::this_thread::sleep_for(std::chrono::seconds(5));
+  { // wakes  workers
     std::unique_lock<std::mutex> lock(mtx);
     ignition = true;
     cv.notify_all();
@@ -73,10 +78,44 @@ Workload::Workload(int duration, int cpu, int gpu, bool random){
   }
   std::cout << "Timeout" << "\n";
   stop = true;
+  ignition = false;
   for(auto& workers : gpu_workload_pool)
     workers.join();
   for(auto& workers : cpu_workload_pool)
     workers.join();
+  cpu_workload_pool.clear();
+  gpu_workload_pool.clear();
+
+  
+  cpu = 6;
+  cpu_workload_pool.reserve(cpu);
+   stop = false;
+  for(int i=0; i<cpu; ++i){
+    std::cout << "Creates " << i << " cpu worker" << "\n";
+    cpu_workload_pool.emplace_back([this]() { this->CPU_Worker(); });
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  { // wakes  workers
+    std::unique_lock<std::mutex> lock(mtx);
+    ignition = true;
+    cv.notify_all();
+    std::cout << "Notified all workers" << "\n";
+  }
+  clock_gettime(CLOCK_MONOTONIC, &begin);
+  elepsed_t = 0;
+  while(elepsed_t < duration) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    elepsed_t = (end.tv_sec - begin.tv_sec) + ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
+  }
+  std::cout << "Timeout" << "\n";
+  stop = true;
+  ignition = false;
+  for(auto& workers : gpu_workload_pool)
+    workers.join();
+  for(auto& workers : cpu_workload_pool)
+    workers.join();
+
   std::cout << "Dummy workload end" << "\n";
 };
 
@@ -194,12 +233,18 @@ void Workload::GPU_Worker(){
     std::unique_lock<std::mutex> lock_(mtx);
     cv.wait(lock_, [this]() { return ignition; });
   }
+  
   while(!stop){
+    struct timespec begin, end;
+    clock_gettime(CLOCK_MONOTONIC, &begin);
     // glDispatchCompute(16, 16, 1);
-    glDispatchCompute(1, 1, 1);
+    glDispatchCompute(32, 32, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
     glFinish();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double latency = (end.tv_sec - begin.tv_sec) + ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
+    std::cout << "latency " << latency << "\n";
   }
 
   // Read back result
