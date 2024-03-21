@@ -7,6 +7,8 @@
 #include <atomic>
 #include <GLES3/gl31.h>
 #include <EGL/egl.h>
+#include <iomanip>
+#include <fstream>
 
 class Workload{
   public:
