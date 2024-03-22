@@ -1,51 +1,32 @@
 #include "dummy_workload.h"
-#define CPU_UTIL_FILE "/home/nano/TfLite_apps/scheduler/cpu_util"
-#define GPU_UTIL_FILE "/home/nano/TfLite_apps/scheduler/gpu_util"
-#define GPU_MAT_SIZE 512
-// 1048576, 524288, 262144, 131072, 65536
-// 1048576 - 2.2s, 100%
-// 524288 - 1s  , 100%
-// 262144 - 0.5s, 100%
-// 131072 - 0.24s, 100%
-// 65536 - 0.12s - glDispatchCompute(32, 32, 1); 98%
-//
-// 1024 - glDispatchCompute(32, 32, 1); 98%
-// 1024 - glDispatchCompute(1, 1, 1); 50%
+#define CPU_UTIL_FILE "/home/odroid/TfLite_apps/scheduler/cpu_util"
+#define GPU_UTIL_FILE "/home/odroid/TfLite_apps/scheduler/gpu_util"
+#define GPU_MAT_SIZE 256
+#define GPU_LOCAL_SIZE 8
+// #define PERIOD 20
+//  10Hz -> 100,50Hz -> 20, 100Hz -> 10
+// #define need_period
 
-const char* computeShaderSource = R"(
-    #version 310 es
-
-    layout (local_size_x = 16, local_size_y = 16) in;
-
-    layout (std140, binding = 0) buffer InputMatrixA {
-        float matrixA[];
-    } inputMatrixA;
-
-    layout (std140, binding = 1) buffer InputMatrixB {
-        float matrixB[];
-    } inputMatrixB;
-
-    layout (std140, binding = 2) buffer OutputMatrix {
-        float resultMatrix[];
-    } outputMatrix;
-
-    void main() {
-        ivec2 idx = ivec2(gl_GlobalInvocationID.xy);
-        float sum = 0.0;
-        for (int k = 0; k < 1024; ++k) {
-            sum += inputMatrixA.matrixA[idx.y * 1024 + k] * inputMatrixB.matrixB[k * 1024 + idx.x];
-        }
-        outputMatrix.resultMatrix[idx.y * 1024 + idx.x] = sum;
+const char* kernelSource = R"(
+    __kernel void matrixMultiply(__global float* A, __global float* B,
+    __global float* C, const int N) {
+        int i = get_global_id(0);
+        int j = get_global_id(1);
+        float acc = 0;
+        for (int k=0; k<N; k++)
+            acc += A[i*N + k] * B[k*N + j];
+        C[i*N + j] = acc;
     }
 )";
 
-Workload::Workload() {};
+Workload::Workload(){};
 
-Workload::Workload(int duration, int cpu, int gpu, bool random){
+Workload::Workload(int duration, int cpu, int gpu, bool random) {
   struct timespec init, begin, end;
   clock_gettime(CLOCK_MONOTONIC, &init);
   std::ofstream gpu_util_f, cpu_util_f;
-  std::cout << "Got cpu " << cpu << " gpu " << gpu << " duration " << duration << "\n";
+  std::cout << "Got cpu " << cpu << " gpu " << gpu << " duration " << duration
+            << "\n";
   stop = false;
   // if(gpu > 0){
   //   gpu_workload_pool.reserve(gpu);
@@ -56,51 +37,53 @@ Workload::Workload(int duration, int cpu, int gpu, bool random){
   // }
 
   ///////// CPU 0 GPU 0
-  cpu_util_f.open(CPU_UTIL_FILE, std::ios::out | std::ios::trunc); 
+  cpu_util_f.open(CPU_UTIL_FILE, std::ios::out | std::ios::trunc);
   if (!cpu_util_f.is_open()) {
     std::cerr << "Failed to open" << std::endl;
     return;
   }
-  gpu_util_f.open(GPU_UTIL_FILE, std::ios::out | std::ios::trunc); 
+  gpu_util_f.open(GPU_UTIL_FILE, std::ios::out | std::ios::trunc);
   if (!gpu_util_f.is_open()) {
     std::cerr << "Failed to open" << std::endl;
     return;
   }
-    
+
   cpu = 0;
   duration = 2;
-  if(cpu > 0){
+  if (cpu > 0) {
     cpu_workload_pool.reserve(cpu);
-    for(int i=0; i<cpu; ++i){
+    for (int i = 0; i < cpu; ++i) {
       // std::cout << "Creates " << i << " cpu worker" << "\n";
       cpu_workload_pool.emplace_back([this]() { this->CPU_Worker(); });
     }
   }
-  
+
   std::this_thread::sleep_for(std::chrono::seconds(1));
-  { // wakes  workers
+  {  // wakes  workers
     std::unique_lock<std::mutex> lock(mtx);
     ignition = true;
     cv.notify_all();
-    std::cout << "Notified all workers" << "\n";
+    std::cout << "Notified all workers"
+              << "\n";
   }
-  
+
   double elepsed_t = 0;
   clock_gettime(CLOCK_MONOTONIC, &begin);
-  elepsed_t = (begin.tv_sec - init.tv_sec) + ((begin.tv_nsec - init.tv_nsec) / 1000000000.0);
-  printf("start time : %.6f \n");
-  while(elepsed_t < duration) {
+  elepsed_t = (begin.tv_sec - init.tv_sec) +
+              ((begin.tv_nsec - init.tv_nsec) / 1000000000.0);
+  printf("start time : %.6f \n", elepsed_t);
+  std::cout << duration << "\n";
+  while (elepsed_t < duration) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     clock_gettime(CLOCK_MONOTONIC, &end);
-    elepsed_t = (end.tv_sec - begin.tv_sec) + ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
+    elepsed_t = (end.tv_sec - begin.tv_sec) +
+                ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
   }
   // std::cout << "Timeout" << "\n";
   stop = true;
   ignition = false;
-  for(auto& workers : gpu_workload_pool)
-    workers.join();
-  for(auto& workers : cpu_workload_pool)
-    workers.join();
+  for (auto& workers : gpu_workload_pool) workers.join();
+  for (auto& workers : cpu_workload_pool) workers.join();
   cpu_workload_pool.clear();
   gpu_workload_pool.clear();
 
@@ -109,93 +92,101 @@ Workload::Workload(int duration, int cpu, int gpu, bool random){
   duration = 10;
   cpu_workload_pool.reserve(cpu);
   stop = false;
-  for(int i=0; i<cpu; ++i){
+  for (int i = 0; i < cpu; ++i) {
     // std::cout << "Creates " << i << " cpu worker" << "\n";
     cpu_workload_pool.emplace_back([this]() { this->CPU_Worker(); });
   }
-  cpu_util_f << "400" << "\n";
+  cpu_util_f << "400"
+             << "\n";
   cpu_util_f.close();
-  gpu_util_f << "0" << "\n";
+  gpu_util_f << "0"
+             << "\n";
   gpu_util_f.close();
 
-
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  { // wakes  workers
+  {  // wakes  workers
     std::unique_lock<std::mutex> lock(mtx);
     ignition = true;
     cv.notify_all();
-    std::cout << "Notified all workers" << "\n";
+    std::cout << "Notified all workers"
+              << "\n";
   }
   clock_gettime(CLOCK_MONOTONIC, &begin);
   elepsed_t = 0;
-  while(elepsed_t < duration) {
+  std::cout << duration << "\n";
+  while (elepsed_t < duration) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     clock_gettime(CLOCK_MONOTONIC, &end);
-    elepsed_t = (end.tv_sec - begin.tv_sec) + ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
+    elepsed_t = (end.tv_sec - begin.tv_sec) +
+                ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
   }
-  std::cout << "Timeout" << "\n";
+  std::cout << "Timeout"
+            << "\n";
   stop = true;
   ignition = false;
-  for(auto& workers : gpu_workload_pool)
-    workers.join();
-  for(auto& workers : cpu_workload_pool)
-    workers.join();
+  for (auto& workers : gpu_workload_pool) workers.join();
+  for (auto& workers : cpu_workload_pool) workers.join();
   cpu_workload_pool.clear();
   gpu_workload_pool.clear();
 
   // ///////// CPU 0 GPU 100
   gpu_workload_pool.reserve(1);
-  cpu_util_f.open(CPU_UTIL_FILE, std::ios::out | std::ios::trunc); 
+  cpu_util_f.open(CPU_UTIL_FILE, std::ios::out | std::ios::trunc);
   if (!cpu_util_f.is_open()) {
     std::cerr << "Failed to open" << std::endl;
     return;
   }
-  gpu_util_f.open(GPU_UTIL_FILE, std::ios::out | std::ios::trunc); 
+  gpu_util_f.open(GPU_UTIL_FILE, std::ios::out | std::ios::trunc);
   if (!gpu_util_f.is_open()) {
     std::cerr << "Failed to open" << std::endl;
     return;
   }
-  for(int i=0; i<1; ++i){
-    std::cout << "Creates " << i << " gpu worker" << "\n";
+  for (int i = 0; i < 1; ++i) {
+    std::cout << "Creates " << i << " gpu worker"
+              << "\n";
     gpu_workload_pool.emplace_back([this]() { this->GPU_Worker(); });
   }
-  cpu_util_f << "0" << "\n";
+  cpu_util_f << "0"
+             << "\n";
   cpu_util_f.close();
-  gpu_util_f << "100" << "\n";
+  gpu_util_f << "100"
+             << "\n";
   gpu_util_f.close();
-  
+
   stop = false;
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  { // wakes  workers
+  {  // wakes  workers
     std::unique_lock<std::mutex> lock(mtx);
     ignition = true;
     cv.notify_all();
-    std::cout << "Notified all workers" << "\n";
+    std::cout << "Notified all workers"
+              << "\n";
   }
   clock_gettime(CLOCK_MONOTONIC, &begin);
   elepsed_t = 0;
-  while(elepsed_t < duration) {
+  std::cout << duration << "\n";
+  while (elepsed_t < duration) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     clock_gettime(CLOCK_MONOTONIC, &end);
-    elepsed_t = (end.tv_sec - begin.tv_sec) + ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
+    elepsed_t = (end.tv_sec - begin.tv_sec) +
+                ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
   }
-  std::cout << "Timeout" << "\n";
+  std::cout << "Timeout"
+            << "\n";
   stop = true;
   ignition = false;
-  for(auto& workers : gpu_workload_pool)
-    workers.join();
-  for(auto& workers : cpu_workload_pool)
-    workers.join();
+  for (auto& workers : gpu_workload_pool) workers.join();
+  for (auto& workers : cpu_workload_pool) workers.join();
   cpu_workload_pool.clear();
   gpu_workload_pool.clear();
 
   ///////// CPU 200 GPU 100
-  cpu_util_f.open(CPU_UTIL_FILE, std::ios::out | std::ios::trunc); 
+  cpu_util_f.open(CPU_UTIL_FILE, std::ios::out | std::ios::trunc);
   if (!cpu_util_f.is_open()) {
     std::cerr << "Failed to open" << std::endl;
     return;
   }
-  gpu_util_f.open(GPU_UTIL_FILE, std::ios::out | std::ios::trunc); 
+  gpu_util_f.open(GPU_UTIL_FILE, std::ios::out | std::ios::trunc);
   if (!gpu_util_f.is_open()) {
     std::cerr << "Failed to open" << std::endl;
     return;
@@ -203,62 +194,71 @@ Workload::Workload(int duration, int cpu, int gpu, bool random){
   cpu = 2;
   cpu_workload_pool.reserve(cpu);
   stop = false;
-  for(int i=0; i<cpu; ++i){
-    std::cout << "Creates " << i << " cpu worker" << "\n";
+  for (int i = 0; i < cpu; ++i) {
+    std::cout << "Creates " << i << " cpu worker"
+              << "\n";
     cpu_workload_pool.emplace_back([this]() { this->CPU_Worker(); });
   }
   gpu_workload_pool.reserve(1);
-  for(int i=0; i<1; ++i){
-    std::cout << "Creates " << i << " gpu worker" << "\n";
+  for (int i = 0; i < 1; ++i) {
+    std::cout << "Creates " << i << " gpu worker"
+              << "\n";
     gpu_workload_pool.emplace_back([this]() { this->GPU_Worker(); });
   }
-  cpu_util_f << "200" << "\n";
+  cpu_util_f << "200"
+             << "\n";
   cpu_util_f.close();
-  gpu_util_f << "100" << "\n";
+  gpu_util_f << "100"
+             << "\n";
   gpu_util_f.close();
 
   stop = false;
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  { // wakes  workers
+  {  // wakes  workers
     std::unique_lock<std::mutex> lock(mtx);
     ignition = true;
     cv.notify_all();
-    std::cout << "Notified all workers" << "\n";
+    std::cout << "Notified all workers"
+              << "\n";
   }
   clock_gettime(CLOCK_MONOTONIC, &begin);
   elepsed_t = 0;
-  while(elepsed_t < duration) {
+  std::cout << duration << "\n";
+  while (elepsed_t < duration) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     clock_gettime(CLOCK_MONOTONIC, &end);
-    elepsed_t = (end.tv_sec - begin.tv_sec) + ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
+    elepsed_t = (end.tv_sec - begin.tv_sec) +
+                ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
   }
-  std::cout << "Timeout" << "\n";
+  std::cout << "Timeout"
+            << "\n";
   stop = true;
   ignition = false;
-  for(auto& workers : gpu_workload_pool)
-    workers.join();
-  for(auto& workers : cpu_workload_pool)
-    workers.join();
+  for (auto& workers : gpu_workload_pool) workers.join();
+  for (auto& workers : cpu_workload_pool) workers.join();
   cpu_workload_pool.clear();
   gpu_workload_pool.clear();
-  cpu_util_f.open(CPU_UTIL_FILE, std::ios::out | std::ios::trunc); 
+  cpu_util_f.open(CPU_UTIL_FILE, std::ios::out | std::ios::trunc);
   if (!cpu_util_f.is_open()) {
     std::cerr << "Failed to open" << std::endl;
     return;
   }
-  gpu_util_f.open(GPU_UTIL_FILE, std::ios::out | std::ios::trunc); 
+  gpu_util_f.open(GPU_UTIL_FILE, std::ios::out | std::ios::trunc);
   if (!gpu_util_f.is_open()) {
     std::cerr << "Failed to open" << std::endl;
     return;
   }
-  cpu_util_f << "0" << "\n";
+  cpu_util_f << "0"
+             << "\n";
   cpu_util_f.close();
-  gpu_util_f << "0" << "\n";
+  gpu_util_f << "0"
+             << "\n";
   gpu_util_f.close();
-  std::cout << "Dummy workload end" << "\n";
+  std::cout << "Dummy workload end"
+            << "\n";
 };
 
-void Workload::CPU_Worker(){
+void Workload::CPU_Worker() {
   // not implemented
   // std::cout << "Created new CPU worker \n";
   {
@@ -267,145 +267,148 @@ void Workload::CPU_Worker(){
   }
   double a = 1;
   double b = 0.0003;
-  while(!stop){
+  while (!stop) {
     a *= b;
   }
   // std::cout << "Terminates CPU worker " << "\n";
 };
 
-void Workload::GPU_Worker(){
-  EGLDisplay display;
-  EGLContext context;
-  EGLSurface surface;
+void Workload::GPU_Worker() {
+  int count = 1;
+  double elapsed_t, total_elapsed_t = 0;
+  struct timespec begin, end;
+  int idx;
+  // std::string file_name = "latency.txt";
 
-  // Initialize EGL
-  display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-  if (display == EGL_NO_DISPLAY) {
-      printf("eglGetDisplay returned EGL_NO_DISPLAY.\n");
-      return;
-  }
-  EGLBoolean returnValue = eglInitialize(display, NULL, NULL);
-  if (returnValue != EGL_TRUE) {
-      printf("eglInitialize failed\n");
-      return;
-  }
-  // Configure EGL attributes
-  EGLConfig config;
-  EGLint numConfigs;
-  EGLint configAttribs[] = {
-      EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
-      EGL_NONE
-  };
-  eglChooseConfig(display, configAttribs, &config, 1, &numConfigs);
+  // Set up OpenCL context, device, and queue
+  std::vector<cl::Platform> platforms;
+  cl::Platform::get(&platforms);
+  ////////////////Select a platform
+  auto platform = platforms.front();
+  // Create a device
+  std::vector<cl::Device> devices;
+  platform.getDevices(CL_DEVICE_TYPE_GPU, &devices);
 
-  // Create an EGL context
-  EGLint contextAttribs[] = {
-      EGL_CONTEXT_CLIENT_VERSION, 3,
-      EGL_NONE
-  };
-  
-  context = eglCreateContext(display, EGL_NO_CONTEXT, EGL_CAST(EGLConfig,0), contextAttribs);
-  if (context == EGL_NO_CONTEXT) {
-      printf("eglCreateContext failed\n");
-      return;
-  }
-  // Create a surface
-  surface = eglCreatePbufferSurface(display, config, NULL);
+  // Select a device
+  auto device = devices.front();
 
-  // Make the context current
-  returnValue = eglMakeCurrent(display, surface, surface, context);
-  if (returnValue != EGL_TRUE) {
-      printf("eglMakeCurrent failed returned %d\n", returnValue);
-      return;
-  }
-  // Compile compute shader
-  GLuint computeShader = glCreateShader(GL_COMPUTE_SHADER);
-  glShaderSource(computeShader, 1, &computeShaderSource, NULL);
-  glCompileShader(computeShader);
+  // Create a context
+  cl::Context context(device);
 
-  // Create program and attach shader
-  GLuint program = glCreateProgram();
-  glAttachShader(program, computeShader);
-  glLinkProgram(program);
-  GLint linkStatus = GL_FALSE;
-  glGetProgramiv(program, GL_LINK_STATUS, &linkStatus);
-  if (!linkStatus){
-      printf("glGetProgramiv failed returned \n");
-      return;
-  }
+  // Create a command
+  cl::CommandQueue queue(context, device);
 
+  // Compile the OpenCL kernel
+  cl::Program program(context, kernelSource);
 
-  // Initialize data
+  program.build("-cl-std=CL1.2");
+  // Initialize matrices and create buffers
   const int matrixElements = GPU_MAT_SIZE * GPU_MAT_SIZE;
   std::vector<float> matrixA(matrixElements);
   std::vector<float> matrixB(matrixElements);
   std::vector<float> resultMatrix(matrixElements);
 
   for (int i = 0; i < matrixElements; ++i) {
-      matrixA[i] = static_cast<float>(i);
-      matrixB[i] = static_cast<float>(i + matrixElements);
+    matrixA[i] = static_cast<float>(i);
+    matrixB[i] = static_cast<float>(i + matrixElements);
+    resultMatrix[i] = static_cast<float>(0);
   }
 
-  // Create buffer objects
-  GLuint bufferA, bufferB, bufferResult;
-  glGenBuffers(1, &bufferA);
-  glGenBuffers(1, &bufferB);
-  glGenBuffers(1, &bufferResult);
-  
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferA);
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferB);
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferResult);
+  // For verification
+  // for (int i = 0; i < matrixElements; i++) {
+  //   if (i % GPU_MAT_SIZE == 0) std::cout << "\n";
+  //   std::cout << matrixA[i] << " ";
+  // }
+  // std::cout << "\n";
+  // for (int i = 0; i < matrixElements; i++) {
+  //   if (i % GPU_MAT_SIZE == 0) std::cout << "\n";
+  //   std::cout << matrixB[i] << " ";
+  // }
+  // std::cout << "\n";
 
-  glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(float) * matrixElements, matrixA.data(), GL_STATIC_DRAW);
-  glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(float) * matrixElements, matrixB.data(), GL_STATIC_DRAW);
-  glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(float) * matrixElements, NULL, GL_STATIC_DRAW);
+  // std::cout << std::fixed;
+  // std::cout << std::setprecision(0);
+  // // For verification
+  // for (int i = 0; i < matrixElements; i++) {
+  //   if (i % GPU_MAT_SIZE == 0) std::cout << "\n";
+  //   std::cout << matC[i] << " ";
+  // }
+  // std::cout << "\n";
 
-  // Bind buffer objects to binding points
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, bufferA);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, bufferB);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, bufferResult);
-  
-  glUseProgram(program);
-  std::cout << "Created new GPU worker \n";
-  
+  // Initialize the arrays...
+  cl::Buffer bufferA(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+                     sizeof(float) * GPU_MAT_SIZE * GPU_MAT_SIZE,
+                     matrixA.data());
+  cl::Buffer bufferB(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+                     sizeof(float) * GPU_MAT_SIZE * GPU_MAT_SIZE,
+                     matrixB.data());
+  cl::Buffer bufferResult(context, CL_MEM_READ_WRITE,
+                          sizeof(float) * matrixElements);
+
+  queue.enqueueWriteBuffer(bufferA, CL_TRUE, 0, sizeof(float) * matrixElements,
+                           matrixA.data());
+  queue.enqueueWriteBuffer(bufferB, CL_TRUE, 0, sizeof(float) * matrixElements,
+                           matrixB.data());
+
+  // Set kernel arguments
+  cl::Kernel kernel(program, "matrixMultiply");
+  kernel.setArg(0, bufferA);
+  kernel.setArg(1, bufferB);
+  kernel.setArg(2, bufferResult);
+  kernel.setArg(3, GPU_MAT_SIZE);
+
   {
     std::unique_lock<std::mutex> lock_(mtx);
     cv.wait(lock_, [this]() { return ignition; });
   }
-  
-  while(!stop){
-    // struct timespec begin, end;
-    // clock_gettime(CLOCK_MONOTONIC, &begin);
-    // glDispatchCompute(16, 16, 1);
-    glDispatchCompute(32, 32, 1);
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
-    glFinish();
-    // clock_gettime(CLOCK_MONOTONIC, &end);
-    // double latency = (end.tv_sec - begin.tv_sec) + ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
-    // std::cout << "latency " << latency << "\n";
+  // Launch kernel and measure execution time
+
+  while (!stop) {
+    cl::Event* event;
+    if (event == nullptr) {
+      event = new cl::Event();
+    }
+    void* mapped_ptr_A = queue.enqueueMapBuffer(
+        bufferA, CL_TRUE, CL_MAP_WRITE, 0, sizeof(float) * matrixElements);
+    void* mapped_ptr_B = queue.enqueueMapBuffer(
+        bufferB, CL_TRUE, CL_MAP_WRITE, 0, sizeof(float) * matrixElements);
+
+#ifdef need_period
+    std::this_thread::sleep_for(std::chrono::milliseconds(PERIOD));
+#endif
+    clock_gettime(CLOCK_MONOTONIC, &begin);
+    queue.enqueueNDRangeKernel(
+        kernel, cl::NullRange, cl::NDRange(GPU_MAT_SIZE, GPU_MAT_SIZE),
+        cl::NDRange(GPU_LOCAL_SIZE, GPU_LOCAL_SIZE), NULL, event);
+    queue.finish();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    elapsed_t = (end.tv_sec - begin.tv_sec) +
+                ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
+    total_elapsed_t += elapsed_t;
+    // printf("%d's time: %.11f\n", count, elapsed_t);
+    queue.enqueueReadBuffer(bufferResult, CL_TRUE, 0,
+                            sizeof(float) * matrixElements,
+                            resultMatrix.data());
+    // // 매핑 해제
+    queue.enqueueUnmapMemObject(bufferA, mapped_ptr_A);
+    queue.enqueueUnmapMemObject(bufferB, mapped_ptr_B);
+    // std::ofstream outfile(file_name);
+
+    // if (!outfile.is_open()) {
+    //   std::cerr << "Failed to open " << file_name << std::endl;
+    //   return;
+    // }
+
+    // outfile << std::fixed << std::setprecision(11);
+    // outfile << elapsed_t;
+    // outfile << std::endl;
+    count++;
   }
-
-  // Read back result
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferResult);
-  float *output = (float *)(glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 
-      0, sizeof(float) * matrixElements, GL_MAP_READ_BIT));
-
-  // Clean up
-  glDeleteShader(computeShader);
-  glDeleteProgram(program);
-  glDeleteBuffers(1, &bufferA);
-  glDeleteBuffers(1, &bufferB);
-  glDeleteBuffers(1, &bufferResult);
-  
-  // Tear down EGL
-  eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-  eglDestroySurface(display, surface);
-  eglDestroyContext(display, context);
-  eglTerminate(display);
-
-  std::cout << "Terminates GPU worker " << "\n";
-  return;
+  // printf("%d's average time: %.11f\n", count - 1,
+  //        total_elapsed_t / (count - 1));
+  if (idx == GPU_MAT_SIZE) {
+    printf("Verification success!\n");
+  }
 }
 
-Workload::~Workload() {};
+Workload::~Workload(){};
