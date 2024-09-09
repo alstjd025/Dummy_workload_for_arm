@@ -30,8 +30,19 @@ class Workload {
   bool ignition = false;
   bool terminate = false;
   std::mutex mtx;
+  std::mutex cpu_mtx;
+  std::mutex gpu_mtx;
+
   std::condition_variable cv;
+  std::condition_variable cpu_cv;
+  std::condition_variable gpu_cv;
+  
   std::atomic_bool stop;
+  std::atomic_bool cpu_stop;
+  std::atomic_bool gpu_stop;
+  std::atomic_bool cpu_worker_termination;
+  std::atomic_bool gpu_worker_termination;
+
 
  private:
   // GPU workload pool
