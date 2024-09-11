@@ -25,50 +25,30 @@ int m = 0;
 
 
 const char* computeShaderSource = R"(
-#version 310 es
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in; // Work group size
+    #version 310 es
 
-layout(std430, binding = 0) readonly buffer MatrixA {
-    float A[];
-};
+    layout (local_size_x = 32, local_size_y = 32) in;
 
-layout(std430, binding = 1) readonly buffer MatrixB {
-    float B[];
-};
+    layout (std140, binding = 0) buffer InputMatrixA {
+        float matrixA[];
+    } inputMatrixA;
 
-layout(std430, binding = 2) writeonly buffer MatrixC {
-    float C[];
-};
+    layout (std140, binding = 1) buffer InputMatrixB {
+        float matrixB[];
+    } inputMatrixB;
 
-uniform ivec3 sizeA; // (x1, y1, z1)
-uniform ivec3 sizeB; // (x2, y2, z2)
+    layout (std140, binding = 2) buffer OutputMatrix {
+        float resultMatrix[];
+    } outputMatrix;
 
-void main() {
-    ivec3 gid = ivec3(gl_GlobalInvocationID); // Global ID for each thread
-
-    int x1 = sizeA.x;
-    int y1 = sizeA.y;
-    int z1 = sizeA.z;
-
-    int x2 = sizeB.x;
-    int y2 = sizeB.y;
-    int z2 = sizeB.z;
-
-    // Ensure valid multiplication indices
-    if (gid.x >= x1 || gid.y >= y2 || gid.z >= z2) {
-        return;
+    void main() {
+        ivec2 idx = ivec2(gl_GlobalInvocationID.xy);
+        float sum = 0.0;
+        for (int k = 0; k < 8192; ++k) {
+            sum += inputMatrixA.matrixA[idx.y * 8192 + k] * inputMatrixB.matrixB[k * 8192 + idx.x];
+        }
+        outputMatrix.resultMatrix[idx.y * 8192 + idx.x] = sum;
     }
-
-    float sum = 0.0;
-    for (int i = 0; i < y1; ++i) { // y1 == x2 for matrix multiplication compatibility
-        int indexA = gid.x * (y1 * z1) + i * z1 + gid.z;
-        int indexB = i * (y2 * z2) + gid.y * z2 + gid.z;
-        sum += A[indexA] * B[indexB];
-    }
-
-    int indexC = gid.x * (y2 * z2) + gid.y * z2 + gid.z;
-    C[indexC] = sum;
-}
 )";
 
 bool m_break = false;
@@ -368,43 +348,37 @@ void Workload::GPU_Worker() {
   // }
 
   // Initialize data
+  const long long int matrixElements = GPU_MAT_SIZE * GPU_MAT_SIZE;
+  std::vector<float> matrixA(matrixElements);
+  std::vector<float> matrixB(matrixElements);
+  std::vector<float> resultMatrix(matrixElements);
 
-  int x1 = 1024, y1 = 1024, z1 = 128; // Matrix A size (4x4x4)
-  int x2 = 1024, y2 = 1024, z2 = 8; // Matrix B size (4x4x4)
-
-  // Initialize matrices A and B with some data
-  std::vector<float> A(x1 * y1 * z1, 1.0f); // Fill with 1.0f for simplicity
-  std::vector<float> B(x2 * y2 * z2, 2.0f); // Fill with 2.0f for simplicity
-  std::vector<float> C(x1 * y2 * z2, 0.0f); // Result matrix initialized to 0.0f
+  for (int i = 0; i < matrixElements; ++i) {
+    matrixA[i] = static_cast<float>(i);
+    matrixB[i] = static_cast<float>(i + matrixElements);
+  }
 
   // Create buffer objects
-  GLuint bufferA, bufferB, bufferC;
+  GLuint bufferA, bufferB, bufferResult;
   glGenBuffers(1, &bufferA);
   glGenBuffers(1, &bufferB);
-  glGenBuffers(1, &bufferC);
-
+  glGenBuffers(1, &bufferResult);
 
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferA);
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferB);
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferC);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferResult);
 
-
-  glBufferData(GL_SHADER_STORAGE_BUFFER, A.size() * sizeof(float),
-               A.data(), GL_STATIC_DRAW);
-  glBufferData(GL_SHADER_STORAGE_BUFFER, B.size() * sizeof(float),
-               B.data(), GL_STATIC_DRAW);
-  glBufferData(GL_SHADER_STORAGE_BUFFER, C.size() * sizeof(float),
-               C.data(), GL_STATIC_DRAW);
-              
-  
+  glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(float) * matrixElements,
+               matrixA.data(), GL_STATIC_DRAW);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(float) * matrixElements,
+               matrixB.data(), GL_STATIC_DRAW);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(float) * matrixElements, NULL,
+               GL_STATIC_DRAW);
 
   // Bind buffer objects to binding points
   glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, bufferA);
   glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, bufferB);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, bufferC);
-  
-  glUniform3i(glGetUniformLocation(program, "sizeA"), x1, y1, z1);
-  glUniform3i(glGetUniformLocation(program, "sizeB"), x2, y2, z2);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, bufferResult);
 
   glUseProgram(program);
   std::cout << "Created new GPU worker \n";
@@ -427,7 +401,7 @@ void Workload::GPU_Worker() {
       // std::this_thread::sleep_for(std::chrono::milliseconds(PERIOD));
       
       // clock_gettime(CLOCK_MONOTONIC, &begin);
-      glDispatchCompute((GLuint)x1, (GLuint)y2, (GLuint)z2);
+      glDispatchCompute(16, 1, 1);
       glFlush();  // Ensures that the dispatch command is processed, delete
       // // Create a fence sync object and wait for the GPU to finish
       GLsync syncObj = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0); //delete
@@ -450,9 +424,9 @@ void Workload::GPU_Worker() {
   }
 
   // Read back result
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferC);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferResult);
   float* output = (float*)(glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0,
-                                            sizeof(float) * C.size(),
+                                            sizeof(float) * matrixElements,
                                             GL_MAP_READ_BIT));
 
   // Clean up
@@ -460,7 +434,7 @@ void Workload::GPU_Worker() {
   glDeleteProgram(program);
   glDeleteBuffers(1, &bufferA);
   glDeleteBuffers(1, &bufferB);
-  glDeleteBuffers(1, &bufferC);
+  glDeleteBuffers(1, &bufferResult);
 
   // Tear down EGL
   eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
