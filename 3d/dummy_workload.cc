@@ -98,7 +98,7 @@ Workload::Workload(int cpu, int gpu, bool random) {
   double total_elepsed_t = 0;
   int tmp_c, tmp_g;
   duration = 5; // 12 kernels 1 kernel 3sec
-  total_duration = 15;
+  total_duration = 5;
 
     gpu_workload_pool.reserve(1);
     std::cout << "Creates " << gpu * 10 << "% workload gpu worker"
@@ -221,8 +221,8 @@ void Workload::GPU_Worker() {
   glGetProgramiv(program, GL_LINK_STATUS, &linkStatus);
 
 
-  int x1 = 1024, y1 = 1024, z1 = 128; // Matrix A size (4x4x4)
-  int x2 = 1024, y2 = 1024, z2 = 8; // Matrix B size (4x4x4)
+  int x1 = 1024, y1 = 128, z1 = 128; // Matrix A size (4x4x4)
+  int x2 = 32, y2 = 32, z2 = 32; // Matrix B size (4x4x4)
 
   // Initialize matrices A and B with some data
   std::vector<float> A(x1 * y1 * z1, 1.0f); // Fill with 1.0f for simplicity
@@ -273,7 +273,7 @@ void Workload::GPU_Worker() {
     // Todo : 
     while (!gpu_stop) {
       if (m_break) break;
-      // std::this_thread::sleep_for(std::chrono::milliseconds(PERIOD));
+      std::this_thread::sleep_for(std::chrono::milliseconds(120));
       
       clock_gettime(CLOCK_MONOTONIC, &begin);
       // glDispatchCompute(16, 16, 16);

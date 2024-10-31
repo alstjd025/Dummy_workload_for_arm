@@ -30,6 +30,7 @@ class Workload {
   bool ignition = false;
   bool cpu_ignition = false;
   bool gpu_ignition = false;
+  bool gpu_kernel_done = false;
   bool terminate = false;
   std::mutex mtx;
   std::mutex cpu_mtx;
@@ -38,6 +39,7 @@ class Workload {
   std::condition_variable cv;
   std::condition_variable cpu_cv;
   std::condition_variable gpu_cv;
+  std::condition_variable gpu_end_cv;
   
   std::atomic_bool stop;
   std::atomic_bool cpu_stop;
