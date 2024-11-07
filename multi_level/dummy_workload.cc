@@ -4,12 +4,11 @@
 #define need_period
 #define cpu_use
 #define gpu_use
-#define max_cpu 4
+#define max_cpu 6
 #define exp
 
 #define total_exp_time 36
-#define single_exp_time 1
-#define interval_time 1
+#define single_exp_time 6
 
 //#define hist
 int m = 0;
@@ -84,15 +83,24 @@ void INThandler(int sig) {
 
 Workload::Workload(){};
 
-Workload::Workload(int cpu, int gpu, bool random) {
+Workload::Workload(int duration, float transition_time, int kernel_size,
+                   int cpu, bool random) {
   struct timespec init, begin, end, begin_i, end_i;
   
   /* Total execution occurs in duration x size (sec)*/
 
-  double duration, total_duration;
   int size = 1;
-  
-  
+  total_duration = duration;
+  cpugpu_transition = transition_time;
+  gpu_kernel_size = kernel_size;
+  cpu_cores = cpu;
+
+  std::cout << "Dummy workload" << "\n";
+  std::cout << "Total duration: " << total_duration << "s \n";
+  std::cout << "CPU GPU transition: " << cpugpu_transition << "s \n";
+  std::cout << "GPU z2 kernel size: " << gpu_kernel_size << "\n";
+  std::cout << "CPU max cores: " << cpu_cores << "\n";
+
   // int core[11] = {0, 1, 2, 3, 4, 5, 6};
   // int util[11] = {0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100};
 
@@ -136,198 +144,128 @@ Workload::Workload(int cpu, int gpu, bool random) {
   ////// workload start 
   double elapsed_t = 0;
   double total_elepsed_t = 0;
-  int tmp_c, tmp_g;
-  duration = single_exp_time; // 12 kernels 1 kernel 3sec
-  total_duration = total_exp_time;
-  // clock_gettime(CLOCK_MONOTONIC, &begin_i);
-  for(int k=0; k<hist_c.size(); k++){
-    // tmp_c = 0;
-    tmp_c = hist_c[k];
-    tmp_g = hist_g[k];
-    // tmp_c = 20;
-    // tmp_g = 20;
 
-    if(tmp_c<0) tmp_c *= -1;
-    if(tmp_g<0) tmp_g *= -1;
-    
-    if(tmp_c%10 <= 5){
-      if(tmp_c > 80) cpu = max_cpu;
-      else cpu = tmp_c / 10;
-    } 
-    else {
-      if(tmp_c > 80) cpu = max_cpu;
-      else cpu = tmp_c/10 + 1;
-    }
-
-    if(tmp_g%10 <= 5){
-      gpu = tmp_g / 10;
-      m = tmp_g / 10;
-    } 
-    else {
-      gpu = tmp_g / 10 + 1;
-      m = tmp_g / 10 + 1;
-    }
-
-    std::cout << "cpu " << cpu << " gpu " << gpu << "\n";
-    cpu_workload_pool.reserve(4);
-    stop = false;
-    cpu_worker_termination = false;
-    gpu_worker_termination = false;
-    //for (int i = 0; i < 4; ++i) {
-    //  std::cout << "Creates " << i << " cpu worker"
-    //            << "\n";
-    //  cpu_workload_pool.emplace_back([this]() { this->CPU_Worker(); });
-    //}
-    //Minsung
-    gpu_workload_pool.reserve(1);
-    std::cout << "Creates " << gpu * 10 << "% workload gpu worker"
+  cpu_workload_pool.reserve(cpu_cores);
+  stop = false;
+  cpu_worker_termination = false;
+  gpu_worker_termination = false;
+  for (int i = 0; i < cpu_cores; ++i) {
+    std::cout << "Creates " << i << " cpu worker"
               << "\n";
-    gpu_workload_pool.emplace_back([this]() { this->GPU_Worker(); });
-    
-    //cpu_util_f.open(CPU_UTIL_FILE, std::ios::out | std::ios::trunc);
-    //if (!cpu_util_f.is_open()) {
-    //   std::cerr << "Failed to open cpu_util(h)" << std::endl;
-    //   return;
-    // }
-    //gpu_util_f.open(GPU_UTIL_FILE, std::ios::out | std::ios::trunc);
-    //if (!gpu_util_f.is_open()) {
-    //   std::cerr << "Failed to open gpu_util(h)" << std::endl;
-    //   return;
-    //}
-
-   // cpu_util_f << cpu * 100 << "\n";
-   // cpu_util_f.close();
-   // gpu_util_f << gpu * 10 << "\n";
-   // gpu_util_f.close();
-    clock_gettime(CLOCK_MONOTONIC, &init);
-    while (total_elepsed_t < total_duration) {
-      ////////////////////////
-      // CPU start (300ms)  //
-      ////////////////////////
-      //  cpu_stop = false;
-      //  {  // wakes  workers
-      //    std::unique_lock<std::mutex> lock(cpu_mtx);
-      //    cpu_ignition = true;
-      //    cpu_cv.notify_all();
-      //    std::cout << "Notified CPU workers"
-      //              << "\n";
-      //  }
-      //cpu_util_f << 95 << "\n";
-      //cpu_util_f.close();
-      clock_gettime(CLOCK_MONOTONIC, &begin);
-      elapsed_t = 0;
-      // std::cout << duration << "\n";
-      while (elapsed_t < single_exp_time) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        clock_gettime(CLOCK_MONOTONIC, &end);
-        elapsed_t = (end.tv_sec - begin.tv_sec) +
-                    ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
-      }
-      total_elepsed_t += elapsed_t;
-      // printf("CPU elapsed %.6fs\n", elapsed_t);
-      std::cout << "CPU workload done" << "\n";
-      //   cpu_stop = true;
-      //   cpu_ignition = false;
-      //cpu_util_f.open(CPU_UTIL_FILE, std::ios::out | std::ios::trunc);
-      //if (!cpu_util_f.is_open()) {
-      //  std::cerr << "Failed to open cpu_util(h)" << std::endl;
-      //  return;
-      //}
-      //cpu_util_f << 0 << "\n";
-      //cpu_util_f.close();
-      ////////////////////////
-      // GPU start (300ms)  //
-      ////////////////////////
-      //Minsung
-      gpu_stop = false;
+    cpu_workload_pool.emplace_back([this]() { this->CPU_Worker(); });
+  }
+  //Minsung
+  gpu_workload_pool.reserve(1);
+  std::cout << "Creates kernel size " << gpu_kernel_size << " workload GPU worker"
+            << "\n";
+  gpu_workload_pool.emplace_back([this]() { this->GPU_Worker(); });
+  
+  clock_gettime(CLOCK_MONOTONIC, &init);
+  while (total_elepsed_t < total_duration) {
+    ////////////////////////
+    // CPU start (300ms)  //
+    ////////////////////////
+      cpu_stop = false;
       {  // wakes  workers
-        std::unique_lock<std::mutex> lock(gpu_mtx);
-        gpu_ignition = true;
-        gpu_kernel_done = false;
-        gpu_cv.notify_all();
-        // std::cout << "Notified GPU workers"
-        //           << "\n";
+        std::unique_lock<std::mutex> lock(cpu_mtx);
+        cpu_ignition = true;
+        cpu_cv.notify_all();
+        std::cout << "Notified CPU workers"
+                  << "\n";
       }
-      //gpu_util_f << 95 << "\n";
-      //gpu_util_f.close();
-      clock_gettime(CLOCK_MONOTONIC, &begin);
-      elapsed_t = 0;
-      // std::cout << duration << "\n";
-      // while (elapsed_t < duration) {
-      //   std::this_thread::sleep_for(std::chrono::milliseconds(10));
-      // }
-      { // GPU kernel return wait
-        std::unique_lock<std::mutex> lock_data(gpu_mtx);
-        gpu_end_cv.wait(lock_data, [&] { return gpu_kernel_done; });
-      }
-    
+    clock_gettime(CLOCK_MONOTONIC, &begin);
+    elapsed_t = 0;
+    while (elapsed_t < cpugpu_transition) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
       clock_gettime(CLOCK_MONOTONIC, &end);
       elapsed_t = (end.tv_sec - begin.tv_sec) +
                   ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
-
-      // Minsung
-      gpu_stop = true;
-      total_elepsed_t += elapsed_t;
-      // printf("%.6fs\n", elepsed_t);
-      //gpu_util_f.open(GPU_UTIL_FILE, std::ios::out | std::ios::trunc);
-      //if (!gpu_util_f.is_open()) {
-      //  std::cerr << "Failed to open gpu_util(h)" << std::endl;
-      //  return;
-      //}
-      //gpu_util_f << 0 << "\n";
-      //gpu_util_f.close();
-      // printf("GPU elapsed %.6fs\n", elapsed_t);
-      std::cout << "GPU workload done" << "\n";
-      printf("total eplepsed t : %f \n", total_elepsed_t);
     }
+    total_elepsed_t += elapsed_t;
+    // printf("CPU elapsed %.6fs\n", elapsed_t);
+    std::cout << "CPU workload done" << "\n";
+        cpu_stop = true;
+        cpu_ignition = false;
 
-    // CPU worker kill
-    cpu_worker_termination = true;
-    cpu_stop = true;
-    {  // wakes  workers
-     std::unique_lock<std::mutex> lock(cpu_mtx);
-     cpu_ignition = true;
-     cpu_cv.notify_all();
-     std::cout << "Notified all CPU workers to kill"
-               << "\n";
-    }
-    gpu_worker_termination = true;
-    gpu_stop = true;
+    ////////////////////////
+    // GPU start (300ms)  //
+    ////////////////////////
+    //Minsung
+    gpu_stop = false;
     {  // wakes  workers
       std::unique_lock<std::mutex> lock(gpu_mtx);
       gpu_ignition = true;
+      gpu_kernel_done = false;
       gpu_cv.notify_all();
-      std::cout << "Notified GPU workers to kill"
-                << "\n";
+      // std::cout << "Notified GPU workers"
+      //           << "\n";
     }
+    
+    clock_gettime(CLOCK_MONOTONIC, &begin);
+    elapsed_t = 0;
+    { // GPU kernel return wait
+      std::unique_lock<std::mutex> lock_data(gpu_mtx);
+      gpu_end_cv.wait(lock_data, [&] { return gpu_kernel_done; });
+    }
+  
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    elapsed_t = (end.tv_sec - begin.tv_sec) +
+                ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
 
-    // stop = false;
-    // {  // wakes  workers
-    //   std::unique_lock<std::mutex> lock(mtx);
-    //   ignition = true;
-    //   cv.notify_all();
-    //   std::cout << "Notified all workers"
-    //             << "\n";
-    // }
-    // clock_gettime(CLOCK_MONOTONIC, &begin);
-    // elepsed_t = 0;
-    // // std::cout << duration << "\n";
-    // while (elepsed_t < duration) {
-    //   std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    //   clock_gettime(CLOCK_MONOTONIC, &end);
-    //   elepsed_t = (end.tv_sec - begin.tv_sec) +
-    //               ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
-    // }
-    // // printf("%.6fs\n", elepsed_t);
-    // std::cout << "Timeout" << "\n";
-    stop = true;
-    ignition = false;
-    for (auto& workers : gpu_workload_pool) workers.join();
-    for (auto& workers : cpu_workload_pool) workers.join();
-    cpu_workload_pool.clear();
-    gpu_workload_pool.clear();
-    std::cout << "=====================\n";
+    // Minsung
+    gpu_stop = true;
+    total_elepsed_t += elapsed_t;
+
+    // printf("GPU elapsed %.6fs\n", elapsed_t);
+    std::cout << "GPU workload done" << "\n";
+    printf("total eplepsed t : %f \n", total_elepsed_t);
   }
+
+  // CPU worker kill
+  cpu_worker_termination = true;
+  cpu_stop = true;
+  {  // wakes  workers
+    std::unique_lock<std::mutex> lock(cpu_mtx);
+    cpu_ignition = true;
+    cpu_cv.notify_all();
+    std::cout << "Notified all CPU workers to kill"
+              << "\n";
+  }
+  gpu_worker_termination = true;
+  gpu_stop = true;
+  {  // wakes  workers
+    std::unique_lock<std::mutex> lock(gpu_mtx);
+    gpu_ignition = true;
+    gpu_cv.notify_all();
+    std::cout << "Notified GPU workers to kill"
+              << "\n";
+  }
+
+  // stop = false;
+  // {  // wakes  workers
+  //   std::unique_lock<std::mutex> lock(mtx);
+  //   ignition = true;
+  //   cv.notify_all();
+  //   std::cout << "Notified all workers"
+  //             << "\n";
+  // }
+  // clock_gettime(CLOCK_MONOTONIC, &begin);
+  // elepsed_t = 0;
+  //   std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  //   clock_gettime(CLOCK_MONOTONIC, &end);
+  //   elepsed_t = (end.tv_sec - begin.tv_sec) +
+  //               ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
+  // }
+  // // printf("%.6fs\n", elepsed_t);
+  // std::cout << "Timeout" << "\n";
+  stop = true;
+  ignition = false;
+  for (auto& workers : gpu_workload_pool) workers.join();
+  for (auto& workers : cpu_workload_pool) workers.join();
+  cpu_workload_pool.clear();
+  gpu_workload_pool.clear();
+  std::cout << "=====================\n";
+
 #endif
 };
 
@@ -411,10 +349,14 @@ void Workload::GPU_Worker() {
 
   // Initialize data
   // computation
-  int x1 = 1024, y1 = 128, z1 = 128; // Matrix A size (4x4x4)
-  int x2 = 32, y2 = 32, z2 = 15; // Matrix B size (4x4x4)
-  // nano
-  // z2 128 459ms
+  int x1 = 1024, y1 = 128, z1 = 256; // Matrix A size (4x4x4)
+  int x2 = 32, y2 = 32, z2 = 1024; // Matrix B size (4x4x4)
+  
+  // nano                nx
+  // z2 512
+  // z2 412              202ms 
+  // z2 256              128ms
+  // z2 128 459ms        
   // z2 55 201ms
   // z2 29 105
   // z2 27 99ms
@@ -502,7 +444,7 @@ void Workload::GPU_Worker() {
       clock_gettime(CLOCK_MONOTONIC, &end);
       gpu_elapsed_t = (end.tv_sec - seq_begin.tv_sec) +
                   ((end.tv_nsec - seq_begin.tv_nsec) / 1000000000.0);
-      if (gpu_elapsed_t > single_exp_time) {
+      if (gpu_elapsed_t > cpugpu_transition) {
         gpu_stop = true;
       }
     }

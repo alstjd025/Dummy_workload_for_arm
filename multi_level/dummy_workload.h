@@ -19,12 +19,17 @@ class Workload {
  public:
   Workload();
   // Workload(int duration, int cpu, int gpu, bool random);
-  Workload(int cpu, int gpu, bool random);
+  Workload(int duration, float transition_time, int kernel_size, int cpu, bool random);
 
   ~Workload();
 
   void GPU_Worker();
   void CPU_Worker();
+
+  int total_duration;
+  int cpugpu_transition;
+  int gpu_kernel_size;
+  int cpu_cores;
 
   struct timespec start_time;
   bool ignition = false;
