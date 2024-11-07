@@ -350,7 +350,7 @@ void Workload::GPU_Worker() {
   // Initialize data
   // computation
   int x1 = 1024, y1 = 128, z1 = 256; // Matrix A size (4x4x4)
-  int x2 = 32, y2 = 32, z2 = 1024; // Matrix B size (4x4x4)
+  int x2 = 32, y2 = 32, z2 = gpu_kernel_size; // Matrix B size (4x4x4)
   
   // nano                nx
   // z2 512
