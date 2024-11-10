@@ -1,5 +1,6 @@
 #include <EGL/egl.h>
 #include <GLES3/gl31.h>
+#include <CL/cl.h>
 
 #include <atomic>
 #include <chrono>
@@ -26,8 +27,8 @@ class Workload {
   void GPU_Worker();
   void CPU_Worker();
 
-  int total_duration;
-  int cpugpu_transition;
+  double total_duration;
+  double cpugpu_transition;
   int gpu_kernel_size;
   int cpu_cores;
 

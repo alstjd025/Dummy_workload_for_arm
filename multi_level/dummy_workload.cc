@@ -142,8 +142,8 @@ Workload::Workload(int duration, float transition_time, int kernel_size,
   std::cout << "========Init=========\n";
   ///////////////////////////////////////////////////////////////////////
   ////// workload start 
-  double elapsed_t = 0;
-  double total_elepsed_t = 0;
+  double elapsed_t = 0.0;
+  double total_elapsed_t = 0.0;
 
   cpu_workload_pool.reserve(cpu_cores);
   stop = false;
@@ -161,65 +161,64 @@ Workload::Workload(int duration, float transition_time, int kernel_size,
   gpu_workload_pool.emplace_back([this]() { this->GPU_Worker(); });
   
   clock_gettime(CLOCK_MONOTONIC, &init);
-  while (total_elepsed_t < total_duration) {
+  while (total_elapsed_t < total_duration) {
     ////////////////////////
     // CPU start (300ms)  //
     ////////////////////////
-      cpu_stop = false;
-      {  // wakes  workers
+    cpu_stop = false;
+    {  // Wakes CPU workers
         std::unique_lock<std::mutex> lock(cpu_mtx);
         cpu_ignition = true;
         cpu_cv.notify_all();
-        std::cout << "Notified CPU workers"
-                  << "\n";
-      }
-    clock_gettime(CLOCK_MONOTONIC, &begin);
-    elapsed_t = 0;
-    while (elapsed_t < cpugpu_transition) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-      clock_gettime(CLOCK_MONOTONIC, &end);
-      elapsed_t = (end.tv_sec - begin.tv_sec) +
-                  ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
+        std::cout << "Notified CPU workers\n";
     }
-    total_elepsed_t += elapsed_t;
-    // printf("CPU elapsed %.6fs\n", elapsed_t);
-    std::cout << "CPU workload done" << "\n";
-        cpu_stop = true;
-        cpu_ignition = false;
+
+    elapsed_t = 0;
+    clock_gettime(CLOCK_MONOTONIC, &begin);
+    while (elapsed_t < cpugpu_transition) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        elapsed_t = (end.tv_sec - begin.tv_sec) + ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
+    }
+    printf("CPU elapsed %.6fs\n", elapsed_t);
+
+    total_elapsed_t += elapsed_t;
+    printf("CPU total elapsed %.6fs\n", total_elapsed_t);
+    std::cout << "CPU workload done\n";
+
+    cpu_stop = true;
+    cpu_ignition = false;
 
     ////////////////////////
     // GPU start (300ms)  //
     ////////////////////////
-    //Minsung
     gpu_stop = false;
-    {  // wakes  workers
-      std::unique_lock<std::mutex> lock(gpu_mtx);
-      gpu_ignition = true;
-      gpu_kernel_done = false;
-      gpu_cv.notify_all();
-      // std::cout << "Notified GPU workers"
-      //           << "\n";
+    {  // Wakes GPU workers
+        std::unique_lock<std::mutex> lock(gpu_mtx);
+        gpu_ignition = true;
+        gpu_kernel_done = false;
+        gpu_cv.notify_all();
+        std::cout << "Notified GPU workers\n";
     }
-    
-    clock_gettime(CLOCK_MONOTONIC, &begin);
+
+    // Start GPU timing
     elapsed_t = 0;
-    { // GPU kernel return wait
-      std::unique_lock<std::mutex> lock_data(gpu_mtx);
-      gpu_end_cv.wait(lock_data, [&] { return gpu_kernel_done; });
+    clock_gettime(CLOCK_MONOTONIC, &begin);
+    {  // GPU kernel return wait
+        std::unique_lock<std::mutex> lock_data(gpu_mtx);
+        gpu_end_cv.wait(lock_data, [&] { return gpu_kernel_done; });
     }
-  
     clock_gettime(CLOCK_MONOTONIC, &end);
-    elapsed_t = (end.tv_sec - begin.tv_sec) +
-                ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
 
-    // Minsung
+    // Correct elapsed time calculation after GPU wait
+    elapsed_t = (end.tv_sec - begin.tv_sec) + ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
+    printf("After unlock gpu mtx elapsed %.6fs\n", elapsed_t);
+
     gpu_stop = true;
-    total_elepsed_t += elapsed_t;
-
-    // printf("GPU elapsed %.6fs\n", elapsed_t);
-    std::cout << "GPU workload done" << "\n";
-    printf("total eplepsed t : %f \n", total_elepsed_t);
-  }
+    total_elapsed_t += elapsed_t;
+    std::cout << "GPU workload done\n";
+    printf("Total elapsed time: %.6f seconds\n", total_elapsed_t);
+}
 
   // CPU worker kill
   cpu_worker_termination = true;
@@ -272,7 +271,7 @@ Workload::Workload(int duration, float transition_time, int kernel_size,
 void Workload::CPU_Worker() {
   // not implemented
   while(!cpu_worker_termination){
-    std::cout << "cpu worker start" << "\n";
+    //std::cout << "cpu worker start" << "\n";
     {
       std::unique_lock<std::mutex> lock_(cpu_mtx);
       cpu_cv.wait(lock_, [this]() { return cpu_ignition; });
@@ -288,198 +287,139 @@ void Workload::CPU_Worker() {
 
 
 void Workload::GPU_Worker() {
-  EGLDisplay display;
-  EGLContext context;
-  EGLSurface surface;
-  int count=1, idx;
-  double response_t = 0;
-  double tot_response_t = 0;
-  struct timespec begin, end;
+    struct timespec init_begin, init_end;
+    // Initialize OpenCL platform, device, context, and queue
+    clock_gettime(CLOCK_MONOTONIC, &init_begin);
+    std::vector<cl_platform_id> platform;
+    cl_device_id device;
+    cl_context context;
+    cl_command_queue queue;
+    cl_program program;
+    cl_kernel kernel;
 
-  // Initialize EGL
-  display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-  // if (display == EGL_NO_DISPLAY) {
-  //   printf("eglGetDisplay returned EGL_NO_DISPLAY.\n");
-  //   return;
-  // }
-  EGLBoolean returnValue = eglInitialize(display, NULL, NULL);
-  // if (returnValue != EGL_TRUE) {
-  //   printf("eglInitialize failed\n");
-  //   return;
-  // }
-  // Configure EGL attributes
-  EGLConfig config;
-  EGLint numConfigs;
-  EGLint configAttribs[] = {EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT, EGL_NONE};
-  eglChooseConfig(display, configAttribs, &config, 1, &numConfigs);
+    // Replace with actual kernel source
+    const char* kernelSource = "computeShaderSource";
+    
+    // Obtain platform, device, create context and queue
+    clGetPlatformIDs(1, &platform, NULL);
+    clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
+    context = clCreateContext(NULL, 1, &device, NULL, NULL, NULL);
+    queue = clCreateCommandQueue(context, device, 0, NULL);
 
-  // Create an EGL context
-  EGLint contextAttribs[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
+    // Create and build program and kernel
+    program = clCreateProgramWithSource(context, 1, &kernelSource, NULL, NULL);
 
-  context = eglCreateContext(display, EGL_NO_CONTEXT, EGL_CAST(EGLConfig, 0),
-                             contextAttribs);
-  // if (context == EGL_NO_CONTEXT) {
-  //   printf("eglCreateContext failed\n");
-  //   return;
-  // }
-  // Create a surface
-  surface = eglCreatePbufferSurface(display, config, NULL);
+    cl_context_properties context_properties[] = {
+      CL_CONTEXT_PLATFORM, platform,
+      0
+    };
+    
+    cl_queue_properties queue_properties[] = {
+      0
+    };
 
-  // Make the context current
-  eglMakeCurrent(display, surface, surface, context);
-  // if (returnValue != EGL_TRUE) {
-  //   printf("eglMakeCurrent failed returned %d\n", returnValue);
-  //   return;
-  // }
-  // Compile compute shader
-  GLuint computeShader = glCreateShader(GL_COMPUTE_SHADER);
-  glShaderSource(computeShader, 1, &computeShaderSource, NULL);
-  glCompileShader(computeShader);
+    cl_int errcode;
+    cl_context context = clCreateContext(
+      context_properties, 1, &device, nullptr, nullptr, &errcode
+    );
+    cl_command_queue queue = clCreateCommandQueueWithProperties(
+      context, device, queue_properties, &errcode
+    );
 
-  // Create program and attach shader
-  GLuint program = glCreateProgram();
-  glAttachShader(program, computeShader);
-  glLinkProgram(program);
-  GLint linkStatus = GL_FALSE;
-  glGetProgramiv(program, GL_LINK_STATUS, &linkStatus);
-  // if (!linkStatus) {
-  //   printf("glGetProgramiv failed returned \n");
-  //   return;
-  // }
+    clBuildProgram(program, 1, &device, NULL, NULL, NULL);
+    kernel = clCreateKernel(program, kernelSource, NULL);
 
-  // Initialize data
-  // computation
-  int x1 = 1024, y1 = 128, z1 = 256; // Matrix A size (4x4x4)
-  int x2 = 32, y2 = 32, z2 = gpu_kernel_size; // Matrix B size (4x4x4)
-  
-  // nano                nx
-  // z2 512
-  // z2 412              202ms 
-  // z2 256              128ms
-  // z2 128 459ms        
-  // z2 55 201ms
-  // z2 29 105
-  // z2 27 99ms
-  // z2 15 50ms
-  // z2 3 11mss
-  // z2 6 20 ms
-  // Initialize matrices A and B with some data
-  std::vector<float> A(x1 * y1 * z1, 1.0f); // Fill with 1.0f for simplicity
-  std::vector<float> B(x2 * y2 * z2, 2.0f); // Fill with 2.0f for simplicity
-  std::vector<float> C(x1 * y2 * z2, 0.0f); // Result matrix initialized to 0.0f
+    // Allocate and initialize buffers
+    const int x1 = 1024, y1 = 128, z1 = 256; // Dimensions for matrix A
+    const int x2 = 32, y2 = 32, z2 = gpu_kernel_size;    // Dimensions for matrix B
 
-  // Create buffer objects
-  GLuint bufferA, bufferB, bufferC;
-  glGenBuffers(1, &bufferA);
-  glGenBuffers(1, &bufferB);
-  glGenBuffers(1, &bufferC);
+    std::vector<float> A(x1 * y1 * z1, 1.0f);
+    std::vector<float> B(x2 * y2 * z2, 2.0f);
+    std::vector<float> C(x1 * y2 * z2, 0.0f);
 
+    cl_mem bufferA = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, A.size() * sizeof(float), A.data(), NULL);
+    cl_mem bufferB = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, B.size() * sizeof(float), B.data(), NULL);
+    cl_mem bufferC = clCreateBuffer(context, CL_MEM_WRITE_ONLY, C.size() * sizeof(float), NULL, NULL);
 
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferA);
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferB);
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferC);
+    // Set kernel arguments
+    clSetKernelArg(kernel, 0, sizeof(cl_mem), &bufferA);
+    clSetKernelArg(kernel, 1, sizeof(cl_mem), &bufferB);
+    clSetKernelArg(kernel, 2, sizeof(cl_mem), &bufferC);
+    clSetKernelArg(kernel, 3, sizeof(int), &x1);
+    clSetKernelArg(kernel, 4, sizeof(int), &y1);
+    clSetKernelArg(kernel, 5, sizeof(int), &z1);
+    clSetKernelArg(kernel, 6, sizeof(int), &x2);
+    clSetKernelArg(kernel, 7, sizeof(int), &y2);
+    clSetKernelArg(kernel, 8, sizeof(int), &z2);
 
+    // Define global and local work sizes
+    size_t globalSize[3] = { static_cast<size_t>(x1), static_cast<size_t>(y2), static_cast<size_t>(gpu_kernel_size) };
+    size_t localSize[3] = { static_cast<size_t>(x1), static_cast<size_t>(y2), static_cast<size_t>(gpu_kernel_size) };
 
-  glBufferData(GL_SHADER_STORAGE_BUFFER, A.size() * sizeof(float),
-               A.data(), GL_STATIC_DRAW);
-  glBufferData(GL_SHADER_STORAGE_BUFFER, B.size() * sizeof(float),
-               B.data(), GL_STATIC_DRAW);
-  glBufferData(GL_SHADER_STORAGE_BUFFER, C.size() * sizeof(float),
-               C.data(), GL_STATIC_DRAW);
-              
-  
-
-  // Bind buffer objects to binding points
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, bufferA);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, bufferB);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, bufferC);
-  
-  glUniform3i(glGetUniformLocation(program, "sizeA"), x1, y1, z1);
-  glUniform3i(glGetUniformLocation(program, "sizeB"), x2, y2, z2);
-
-  glUseProgram(program);
-  std::cout << "Created new GPU worker \n";
-  while(!gpu_worker_termination){
-    {
-      std::unique_lock<std::mutex> lock_(gpu_mtx);
-      gpu_cv.wait(lock_, [this]() { return gpu_ignition; });
-    }
-
+    // Register SIGINT handler
     signal(SIGINT, INThandler);
-    std::ofstream outfile;
+    clock_gettime(CLOCK_MONOTONIC, &init_end);
+    double init_time = (init_end.tv_sec - init_begin.tv_sec) + ((init_end.tv_nsec - init_begin.tv_nsec) / 1000000000.0);
+    printf("init time : %.11f\n", init_time);
 
-    // multi-level test
-    // Todo :
-    count = 0;
-    float gpu_elapsed_t = 0;
-    struct timespec seq_begin;
-    clock_gettime(CLOCK_MONOTONIC, &seq_begin);
-    // std::cout << "gpu go" << "\n";
-    while (!gpu_stop) {
-      if (m_break) break;
-      // int PERIOD = 5;
-      // glDispatchCompute(16, 16, 1);
+    struct timespec begin, end;
 
-      // std::this_thread::sleep_for(std::chrono::milliseconds(PERIOD));
-      
-      clock_gettime(CLOCK_MONOTONIC, &begin);
-      glDispatchCompute((GLuint)x1, (GLuint)y2, (GLuint)z2);
-      glFlush();  // Ensures that the dispatch command is processed, delete
-      // // Create a fence sync object and wait for the GPU to finish
-      GLsync syncObj = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0); //delete
-      glWaitSync(syncObj, 0, GL_TIMEOUT_IGNORED); // delete 
-      clock_gettime(CLOCK_MONOTONIC, &end);
+    while (!gpu_worker_termination) {
+      int count = 0;
+      double tot_response_t = 0.0, gpu_elapsed_t = 0.0;
+      struct timespec seq_begin;
 
-      response_t = (end.tv_sec - begin.tv_sec) +
-                   ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
-      // tot_response_t += response_t;
-      count++;
-
-      //glDeleteSync(syncObj);  // Clean up the sync object
-      glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-      glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
-      glFinish();  // all commmand push to GPU HW queue (gpu has two queue, gpu
-                  // drvier queue + gpu hw queue )
-      printf("gpu kernel latency : %.11f\n", response_t);
-      clock_gettime(CLOCK_MONOTONIC, &end);
-      gpu_elapsed_t = (end.tv_sec - seq_begin.tv_sec) +
-                  ((end.tv_nsec - seq_begin.tv_nsec) / 1000000000.0);
-      if (gpu_elapsed_t > cpugpu_transition) {
-        gpu_stop = true;
+      {
+        std::unique_lock<std::mutex> lock_(gpu_mtx);
+        gpu_cv.wait(lock_, [this]() { return gpu_ignition; });
       }
+
+      clock_gettime(CLOCK_MONOTONIC, &seq_begin);
+
+      while (!gpu_stop) {
+        if (m_break) break;
+
+        clock_gettime(CLOCK_MONOTONIC, &begin);
+        clEnqueueNDRangeKernel(queue, kernel, 3, NULL, globalSize, localSize, 0, NULL, NULL);
+        clFlush(queue);
+        clFinish(queue); // Ensure kernel execution completes
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        double response_t = (end.tv_sec - begin.tv_sec) + ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
+        printf("gpu %d's response time : %.11f\n", count, response_t);
+
+        gpu_elapsed_t += response_t;
+        //  (end.tv_sec - seq_begin.tv_sec) + ((end.tv_nsec - seq_begin.tv_nsec) / 1000000000.0);
+
+        if (gpu_elapsed_t > cpugpu_transition) {
+            printf("gpu elapsed time : %.11f\n", gpu_elapsed_t);
+            gpu_stop = true;
+        }
+        count++;
+      }
+      {
+        std::unique_lock<std::mutex> lock_data(gpu_mtx);
+        gpu_kernel_done = true;
+        gpu_ignition = false;
+        gpu_end_cv.notify_one();
+      }
+      // printf("%d's average : %.11f\n", count, (tot_response_t / double(count)));
     }
-    // wake main thread
-    {
-      std::unique_lock<std::mutex> lock_data(gpu_mtx);
-      gpu_kernel_done = true;
-      gpu_ignition = false;
-      gpu_end_cv.notify_one();
-    }
-  // printf("%d's average : %.11f\n", count, (tot_response_t / double(count)));
-  }
 
-  // Read back result
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferC);
-  float* output = (float*)(glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0,
-                                            sizeof(float) * C.size(),
-                                            GL_MAP_READ_BIT));
+    // Read back result from bufferC
+    clEnqueueReadBuffer(queue, bufferC, CL_TRUE, 0, C.size() * sizeof(float), C.data(), 0, NULL, NULL);
 
-  // Clean up
-  glDeleteShader(computeShader);
-  glDeleteProgram(program);
-  glDeleteBuffers(1, &bufferA);
-  glDeleteBuffers(1, &bufferB);
-  glDeleteBuffers(1, &bufferC);
+    // Clean up
+    clReleaseMemObject(bufferA);
+    clReleaseMemObject(bufferB);
+    clReleaseMemObject(bufferC);
+    clReleaseKernel(kernel);
+    clReleaseProgram(program);
+    clReleaseCommandQueue(queue);
+    clReleaseContext(context);
 
-  // Tear down EGL
-  eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-  eglDestroySurface(display, surface);
-  eglDestroyContext(display, context);
-  eglTerminate(display);
+    std::cout << "GPU worker terminated." << std::endl;
 
-  std::cout << "Terminates GPU worker "
-            << "\n";
-  return;
+    return;
 }
 
 Workload::~Workload(){};
