@@ -27,52 +27,27 @@ int m = 0;
 */
 
 
-const char* computeShaderSource = R"(
-#version 310 es
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in; // Work group size
+ const char* computeShaderSource = R"(
+    __kernel void matmul(
+        __global const float* A,
+        __global const float* B,
+        __global float* C,
+        const unsigned int M,
+        const unsigned int N,
+        const unsigned int P) {
 
-layout(std430, binding = 0) readonly buffer MatrixA {
-    float A[];
-};
+        int row = get_global_id(0);
+        int col = get_global_id(1);
 
-layout(std430, binding = 1) readonly buffer MatrixB {
-    float B[];
-};
+        if (row < M && col < P) {
+            float sum = 0.0f;
+            for (int k = 0; k < N; ++k) {
+                sum += A[row * N + k] * B[k * P + col];
+            }
+            C[row * P + col] = sum;
+        }
+    })";
 
-layout(std430, binding = 2) writeonly buffer MatrixC {
-    float C[];
-};
-
-uniform ivec3 sizeA; // (x1, y1, z1)
-uniform ivec3 sizeB; // (x2, y2, z2)
-
-void main() {
-    ivec3 gid = ivec3(gl_GlobalInvocationID); // Global ID for each thread
-
-    int x1 = sizeA.x;
-    int y1 = sizeA.y;
-    int z1 = sizeA.z;
-
-    int x2 = sizeB.x;
-    int y2 = sizeB.y;
-    int z2 = sizeB.z;
-
-    // Ensure valid multiplication indices
-    if (gid.x >= x1 || gid.y >= y2 || gid.z >= z2) {
-        return;
-    }
-
-    float sum = 0.0;
-    for (int i = 0; i < y1; ++i) { // y1 == x2 for matrix multiplication compatibility
-        int indexA = gid.x * (y1 * z1) + i * z1 + gid.z;
-        int indexB = i * (y2 * z2) + gid.y * z2 + gid.z;
-        sum += A[indexA] * B[indexB];
-    }
-
-    int indexC = gid.x * (y2 * z2) + gid.y * z2 + gid.z;
-    C[indexC] = sum;
-}
-)";
 
 bool m_break = false;
 
@@ -82,6 +57,18 @@ void INThandler(int sig) {
 }
 
 Workload::Workload(){};
+
+void WriteUtilization(int utilization){
+  std::ofstream gpu_util_file("gpu_util");
+    if (gpu_util_file.is_open()) {
+        gpu_util_file << utilization;
+        gpu_util_file.close();
+    } else {
+        std::cerr << "Failed to open gpu_util file for writing.\n";
+    }
+    std::cout << "[EZE] GPU util : " << utilization << std::endl;
+}
+
 
 Workload::Workload(int duration, float transition_time, int kernel_size,
                    int cpu, bool random) {
@@ -159,12 +146,14 @@ Workload::Workload(int duration, float transition_time, int kernel_size,
   std::cout << "Creates kernel size " << gpu_kernel_size << " workload GPU worker"
             << "\n";
   gpu_workload_pool.emplace_back([this]() { this->GPU_Worker(); });
-  
+  std::cout << "gpu created\n";
   clock_gettime(CLOCK_MONOTONIC, &init);
   while (total_elapsed_t < total_duration) {
     ////////////////////////
     // CPU start (300ms)  //
     ////////////////////////
+
+    //////////////////////// EZE
     cpu_stop = false;
     {  // Wakes CPU workers
         std::unique_lock<std::mutex> lock(cpu_mtx);
@@ -172,16 +161,15 @@ Workload::Workload(int duration, float transition_time, int kernel_size,
         cpu_cv.notify_all();
         std::cout << "Notified CPU workers\n";
     }
-
     elapsed_t = 0;
     clock_gettime(CLOCK_MONOTONIC, &begin);
     while (elapsed_t < cpugpu_transition) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         clock_gettime(CLOCK_MONOTONIC, &end);
+        // WriteUtilization(0);
         elapsed_t = (end.tv_sec - begin.tv_sec) + ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
     }
     printf("CPU elapsed %.6fs\n", elapsed_t);
-
     total_elapsed_t += elapsed_t;
     printf("CPU total elapsed %.6fs\n", total_elapsed_t);
     std::cout << "CPU workload done\n";
@@ -192,6 +180,7 @@ Workload::Workload(int duration, float transition_time, int kernel_size,
     ////////////////////////
     // GPU start (300ms)  //
     ////////////////////////
+    printf("\033[0;33mGPU START\033[0m\n");
     gpu_stop = false;
     {  // Wakes GPU workers
         std::unique_lock<std::mutex> lock(gpu_mtx);
@@ -203,6 +192,7 @@ Workload::Workload(int duration, float transition_time, int kernel_size,
 
     // Start GPU timing
     elapsed_t = 0;
+    // WriteUtilization(100);
     clock_gettime(CLOCK_MONOTONIC, &begin);
     {  // GPU kernel return wait
         std::unique_lock<std::mutex> lock_data(gpu_mtx);
@@ -271,7 +261,7 @@ Workload::Workload(int duration, float transition_time, int kernel_size,
 void Workload::CPU_Worker() {
   // not implemented
   while(!cpu_worker_termination){
-    //std::cout << "cpu worker start" << "\n";
+    std::cout << "cpu worker start" << "\n";
     {
       std::unique_lock<std::mutex> lock_(cpu_mtx);
       cpu_cv.wait(lock_, [this]() { return cpu_ignition; });
@@ -285,141 +275,137 @@ void Workload::CPU_Worker() {
   std::cout << "Terminates CPU worker " << "\n";
 };
 
-
 void Workload::GPU_Worker() {
     struct timespec init_begin, init_end;
-    // Initialize OpenCL platform, device, context, and queue
     clock_gettime(CLOCK_MONOTONIC, &init_begin);
-    std::vector<cl_platform_id> platform;
-    cl_device_id device;
-    cl_context context;
-    cl_command_queue queue;
-    cl_program program;
-    cl_kernel kernel;
 
-    // Replace with actual kernel source
-    const char* kernelSource = "computeShaderSource";
-    
-    // Obtain platform, device, create context and queue
-    clGetPlatformIDs(1, &platform, NULL);
-    clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
-    context = clCreateContext(NULL, 1, &device, NULL, NULL, NULL);
-    queue = clCreateCommandQueue(context, device, 0, NULL);
+    try {
+        // OpenCL 플랫폼, 디바이스, 큐 설정
+        std::vector<cl::Platform> platforms;
+        cl::Platform::get(&platforms);
+        if (platforms.empty()) throw std::runtime_error("No OpenCL platforms found.");
 
-    // Create and build program and kernel
-    program = clCreateProgramWithSource(context, 1, &kernelSource, NULL, NULL);
+        auto platform = platforms.front();
+        std::vector<cl::Device> devices;
+        platform.getDevices(CL_DEVICE_TYPE_GPU, &devices);
+        if (devices.empty()) throw std::runtime_error("No GPU devices found on the platform.");
 
-    cl_context_properties context_properties[] = {
-      CL_CONTEXT_PLATFORM, platform,
-      0
-    };
-    
-    cl_queue_properties queue_properties[] = {
-      0
-    };
+        auto device = devices.front();
+        std::cout << "Successfully retrieved platform and device.\n";
 
-    cl_int errcode;
-    cl_context context = clCreateContext(
-      context_properties, 1, &device, nullptr, nullptr, &errcode
-    );
-    cl_command_queue queue = clCreateCommandQueueWithProperties(
-      context, device, queue_properties, &errcode
-    );
+        cl::Context context(device);
+        cl::CommandQueue queue(context, device);
+        cl::Program program(context, computeShaderSource);
 
-    clBuildProgram(program, 1, &device, NULL, NULL, NULL);
-    kernel = clCreateKernel(program, kernelSource, NULL);
+        program.build("-cl-std=CL1.2");
+        std::cout << "OpenCL kernel compiled successfully.\n";
 
-    // Allocate and initialize buffers
-    const int x1 = 1024, y1 = 128, z1 = 256; // Dimensions for matrix A
-    const int x2 = 32, y2 = 32, z2 = gpu_kernel_size;    // Dimensions for matrix B
+        // 버퍼 및 행렬 크기 초기화
+        const int x1 = 1024, y1 = 128, z1 = 256;
+        const int x2 = 32, y2 = 32, z2 = gpu_kernel_size;
+        const int matrixElements = x1 * y2 * z2;
+        std::vector<float> matrixA(x1 * y1 * z1);
+        std::vector<float> matrixB(matrixElements);
+        std::vector<float> resultMatrix(matrixElements);
 
-    std::vector<float> A(x1 * y1 * z1, 1.0f);
-    std::vector<float> B(x2 * y2 * z2, 2.0f);
-    std::vector<float> C(x1 * y2 * z2, 0.0f);
-
-    cl_mem bufferA = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, A.size() * sizeof(float), A.data(), NULL);
-    cl_mem bufferB = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, B.size() * sizeof(float), B.data(), NULL);
-    cl_mem bufferC = clCreateBuffer(context, CL_MEM_WRITE_ONLY, C.size() * sizeof(float), NULL, NULL);
-
-    // Set kernel arguments
-    clSetKernelArg(kernel, 0, sizeof(cl_mem), &bufferA);
-    clSetKernelArg(kernel, 1, sizeof(cl_mem), &bufferB);
-    clSetKernelArg(kernel, 2, sizeof(cl_mem), &bufferC);
-    clSetKernelArg(kernel, 3, sizeof(int), &x1);
-    clSetKernelArg(kernel, 4, sizeof(int), &y1);
-    clSetKernelArg(kernel, 5, sizeof(int), &z1);
-    clSetKernelArg(kernel, 6, sizeof(int), &x2);
-    clSetKernelArg(kernel, 7, sizeof(int), &y2);
-    clSetKernelArg(kernel, 8, sizeof(int), &z2);
-
-    // Define global and local work sizes
-    size_t globalSize[3] = { static_cast<size_t>(x1), static_cast<size_t>(y2), static_cast<size_t>(gpu_kernel_size) };
-    size_t localSize[3] = { static_cast<size_t>(x1), static_cast<size_t>(y2), static_cast<size_t>(gpu_kernel_size) };
-
-    // Register SIGINT handler
-    signal(SIGINT, INThandler);
-    clock_gettime(CLOCK_MONOTONIC, &init_end);
-    double init_time = (init_end.tv_sec - init_begin.tv_sec) + ((init_end.tv_nsec - init_begin.tv_nsec) / 1000000000.0);
-    printf("init time : %.11f\n", init_time);
-
-    struct timespec begin, end;
-
-    while (!gpu_worker_termination) {
-      int count = 0;
-      double tot_response_t = 0.0, gpu_elapsed_t = 0.0;
-      struct timespec seq_begin;
-
-      {
-        std::unique_lock<std::mutex> lock_(gpu_mtx);
-        gpu_cv.wait(lock_, [this]() { return gpu_ignition; });
-      }
-
-      clock_gettime(CLOCK_MONOTONIC, &seq_begin);
-
-      while (!gpu_stop) {
-        if (m_break) break;
-
-        clock_gettime(CLOCK_MONOTONIC, &begin);
-        clEnqueueNDRangeKernel(queue, kernel, 3, NULL, globalSize, localSize, 0, NULL, NULL);
-        clFlush(queue);
-        clFinish(queue); // Ensure kernel execution completes
-        clock_gettime(CLOCK_MONOTONIC, &end);
-        double response_t = (end.tv_sec - begin.tv_sec) + ((end.tv_nsec - begin.tv_nsec) / 1000000000.0);
-        printf("gpu %d's response time : %.11f\n", count, response_t);
-
-        gpu_elapsed_t += response_t;
-        //  (end.tv_sec - seq_begin.tv_sec) + ((end.tv_nsec - seq_begin.tv_nsec) / 1000000000.0);
-
-        if (gpu_elapsed_t > cpugpu_transition) {
-            printf("gpu elapsed time : %.11f\n", gpu_elapsed_t);
-            gpu_stop = true;
+        for (int i = 0; i < matrixElements; ++i) {
+            matrixA[i] = static_cast<float>(i);
+            matrixB[i] = static_cast<float>(i + matrixElements);
+            resultMatrix[i] = static_cast<float>(0);
         }
-        count++;
-      }
-      {
-        std::unique_lock<std::mutex> lock_data(gpu_mtx);
-        gpu_kernel_done = true;
-        gpu_ignition = false;
-        gpu_end_cv.notify_one();
-      }
-      // printf("%d's average : %.11f\n", count, (tot_response_t / double(count)));
+
+        // 버퍼 할당
+        cl::Buffer bufferA(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(float) * x1 * y1 * z1, matrixA.data());
+        cl::Buffer bufferB(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(float) * x2 * y2 * z2, matrixB.data());
+        cl::Buffer bufferResult(context, CL_MEM_READ_WRITE, sizeof(float) * matrixElements);
+        
+        cl::Kernel kernel(program, "matmul");  // 커널 이름을 matmul로 변경
+        kernel.setArg(0, bufferA);
+        kernel.setArg(1, bufferB);
+        kernel.setArg(2, bufferResult);
+        kernel.setArg(3, x1);  // M (행 수)
+        kernel.setArg(4, y1);  // N (내적 크기)
+        kernel.setArg(5, z2);  // P (열 수)
+
+        // 버퍼 및 커널 인수 설정 확인
+        std::cout << "Buffers and kernel arguments initialized successfully.\n";
+
+        queue.enqueueWriteBuffer(bufferA, CL_TRUE, 0, sizeof(float) * x1 * y1 * z1, matrixA.data());
+        queue.enqueueWriteBuffer(bufferB, CL_TRUE, 0, sizeof(float) * x2 * y2 * z2, matrixB.data());
+
+        signal(SIGINT, INThandler);
+        clock_gettime(CLOCK_MONOTONIC, &init_end);
+        double init_time = (init_end.tv_sec - init_begin.tv_sec) + ((init_end.tv_nsec - init_begin.tv_nsec) / 1e9);
+        printf("init time : %.11f\n", init_time);
+
+        struct timespec begin, end;
+        std::cout << "Ready to perform matrix multiplication.\n";
+
+        while (!gpu_worker_termination) {
+            int count = 0;
+            double tot_response_t = 0.0, gpu_elapsed_t = 0.0;
+            struct timespec seq_begin;
+
+            void* mapped_ptr_A = queue.enqueueMapBuffer(bufferA, CL_TRUE, CL_MAP_WRITE, 0, sizeof(float) * x1 * y1 * z1);
+            if (mapped_ptr_A == nullptr) throw std::runtime_error("Failed to map buffer A.");
+
+            void* mapped_ptr_B = queue.enqueueMapBuffer(bufferB, CL_TRUE, CL_MAP_WRITE, 0, sizeof(float) * x2 * y2 * z2);
+            if (mapped_ptr_B == nullptr) throw std::runtime_error("Failed to map buffer B.");
+
+            {
+                std::unique_lock<std::mutex> lock_(gpu_mtx);
+                gpu_cv.wait(lock_, [this]() { return gpu_ignition; });
+            }
+
+            clock_gettime(CLOCK_MONOTONIC, &seq_begin);
+
+            while (!gpu_stop) {
+                if (m_break) break;
+
+                clock_gettime(CLOCK_MONOTONIC, &begin);
+                // 커널 실행: 행렬 곱셈을 위한 NDRange 설정
+                cl_int err = queue.enqueueNDRangeKernel(kernel, cl::NullRange, cl::NDRange(x1, z2), cl::NDRange(1, 1), NULL, NULL);
+                std::cout << err << std::endl;
+                if (err != CL_SUCCESS) {
+                    std::cerr << "Failed to enqueue NDRange kernel, error code: " << err << "\n";
+                    throw std::runtime_error("Kernel execution failed.");
+                }
+                queue.finish();
+
+                clock_gettime(CLOCK_MONOTONIC, &end);
+                double response_t = (end.tv_sec - begin.tv_sec) + ((end.tv_nsec - begin.tv_nsec) / 1e9);
+                gpu_elapsed_t += response_t;
+                printf("response_t time : %.11f\n", response_t);
+                if (gpu_elapsed_t > cpugpu_transition) {
+                    printf("gpu elapsed time : %.11f\n", gpu_elapsed_t);
+                    gpu_stop = true;
+                }
+                count++;
+            }
+
+            {
+                std::unique_lock<std::mutex> lock_data(gpu_mtx);
+                gpu_kernel_done = true;
+                gpu_ignition = false;
+                gpu_end_cv.notify_one();
+            }
+
+            queue.enqueueReadBuffer(bufferResult, CL_TRUE, 0, sizeof(float) * matrixElements, resultMatrix.data());
+            std::cout << "Result matrix successfully read back from GPU.\n";
+
+            queue.enqueueUnmapMemObject(bufferA, mapped_ptr_A);
+            queue.enqueueUnmapMemObject(bufferB, mapped_ptr_B);
+            std::cout << "Buffers unmapped successfully.\n";
+        }
+
+        std::cout << "GPU worker terminated.\n";
     }
-
-    // Read back result from bufferC
-    clEnqueueReadBuffer(queue, bufferC, CL_TRUE, 0, C.size() * sizeof(float), C.data(), 0, NULL, NULL);
-
-    // Clean up
-    clReleaseMemObject(bufferA);
-    clReleaseMemObject(bufferB);
-    clReleaseMemObject(bufferC);
-    clReleaseKernel(kernel);
-    clReleaseProgram(program);
-    clReleaseCommandQueue(queue);
-    clReleaseContext(context);
-
-    std::cout << "GPU worker terminated." << std::endl;
-
-    return;
+    catch (const std::exception& e) {
+        std::cerr << "Exception: " << e.what() << std::endl;
+    }
 }
 
+
+
 Workload::~Workload(){};
+
